@@ -1,0 +1,50 @@
+# Modelo do Container Apps Job "cofre-processador".
+# O script cofre-seguro.ps1 troca os marcadores __X__ pelos valores reais e gera o job.yaml.
+location: __LOC__
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    __MI_ID__: {}
+properties:
+  environmentId: __ENV_ID__
+  workloadProfileName: Consumption
+  configuration:
+    triggerType: Manual          # so roda quando disparado
+    replicaTimeout: 600
+    replicaRetryLimit: 0
+    manualTriggerConfig:
+      parallelism: 1
+      replicaCompletionCount: 1
+    registries:
+    - server: __ACR__
+      identity: __MI_ID__        # baixa a imagem com a identidade, sem senha
+  template:
+    containers:
+    - name: processador
+      image: __ACR__/processador:v1
+      resources:
+        cpu: 0.5
+        memory: 1Gi
+      env:
+      - name: KV_NAME
+        value: __KV__
+      - name: ST_NAME
+        value: __ST__
+      - name: CLIENT_ID
+        value: __CLIENT__
+      command: ["/bin/bash", "-c"]
+      args:
+      - |
+        echo "[COFRE] Processador seguro iniciado"
+        echo "[COFRE] DNS Key Vault: $(getent hosts ${KV_NAME}.vault.azure.net || echo nao-resolvido)"
+        echo "[COFRE] DNS Storage:   $(getent hosts ${ST_NAME}.blob.core.windows.net || echo nao-resolvido)"
+        az login --identity --client-id "$CLIENT_ID" --allow-no-subscriptions -o none || { echo "[COFRE] ERRO no login"; exit 1; }
+        echo "[COFRE] Login com Managed Identity OK (nenhuma senha usada)"
+        SEGREDO=$(az keyvault secret show --vault-name "$KV_NAME" -n ChaveSistemaExterno --query value -o tsv) || { echo "[COFRE] ERRO ao ler o Key Vault"; exit 1; }
+        echo "[COFRE] Credencial lida do Key Vault (${#SEGREDO} caracteres, valor nao exibido)"
+        ARQ="relatorio-$(date +%Y%m%d-%H%M%S).txt"
+        echo "Relatorio gerado em $(date) pelo processador seguro" > "/tmp/$ARQ"
+        az storage blob upload --account-name "$ST_NAME" -c relatorios -n "$ARQ" -f "/tmp/$ARQ" --auth-mode login -o none || { echo "[COFRE] ERRO ao gravar no Storage"; exit 1; }
+        echo "[COFRE] Relatorio gravado no Storage: $ARQ"
+        for B in $(az storage blob list --account-name "$ST_NAME" -c relatorios --auth-mode login --query "[].name" -o tsv); do echo "[COFRE] Arquivo no container: $B"; done
+        echo "[COFRE] Processamento concluido com sucesso"
